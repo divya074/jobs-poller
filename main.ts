@@ -149,6 +149,7 @@ function formatDate(dateStr?: string): string {
 // ─── POLL LOGIC ───────────────────────────────────────────────────────────────
 async function poll() {
   try {
+    return; // temporarily disabled
     console.log(`[${new Date().toISOString()}] Polling Microsoft Careers...`);
     const jobs = await fetchJobs();
 
