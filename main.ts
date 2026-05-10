@@ -1,8 +1,8 @@
 /// <reference lib="deno.ns" />
 
 // ─── CONFIG (set these as env vars) ───────────────────────────────────────────
-const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;  // from resend.com
-const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL")!;       // who to send to
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
+const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL")!;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 const seenJobIds = new Set<string>();
@@ -21,26 +21,36 @@ interface Job {
 // ─── MICROSOFT CAREERS API ────────────────────────────────────────────────────
 async function fetchJobs(): Promise<Job[]> {
   const params = new URLSearchParams({
-    q: "",
-    lc: "United States",
-    l: "en_us",
-    pg: "1",
-    pgSz: "20",
-    o: "Recent",
-    flt: "true",
+    country: "United States",
+    profession: "Software Engineering",
+    includeRemote: "true",
+    sortBy: "Most Recent",
+    startrow: "0",
+    num: "20",
   });
 
   const res = await fetch(
-    `https://jobs.careers.microsoft.com/global/en/search?${params}`,
+    `https://gcsservices.careers.microsoft.com/search/api/v1/search?${params}`,
     {
       headers: {
-        "User-Agent": "Mozilla/5.0",
-        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://jobs.careers.microsoft.com",
+        "Referer": "https://jobs.careers.microsoft.com/",
       },
     }
   );
 
+  // Log response info to help debug
+  const contentType = res.headers.get("content-type");
+  console.log(`API response status: ${res.status}, content-type: ${contentType}`);
+
   if (!res.ok) throw new Error(`Microsoft API error: ${res.status}`);
+  if (!contentType?.includes("application/json")) {
+    const text = await res.text();
+    throw new Error(`Expected JSON but got: ${text.slice(0, 200)}`);
+  }
 
   const data = await res.json();
   return data?.operationResult?.result?.jobs ?? [];
@@ -55,7 +65,7 @@ async function sendEmail(jobs: Job[]) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: "onboarding@resend.dev",  // swap for your domain once verified
+      from: "onboarding@resend.dev",
       to: NOTIFY_EMAIL,
       subject: `🚀 ${jobs.length} New Microsoft SWE Job${jobs.length > 1 ? "s" : ""} Posted`,
       html: buildEmailHtml(jobs),
@@ -145,9 +155,7 @@ async function poll() {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
     const newJobs = jobs.filter((j) => {
-      // Must be posted within last 5 minutes
       const isRecent = j.postingDate && new Date(j.postingDate) >= fiveMinutesAgo;
-      // Must not have been seen in a previous poll
       const isNew = !seenJobIds.has(j.jobId);
       return isRecent && isNew;
     });
