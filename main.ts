@@ -1,59 +1,56 @@
 /// <reference lib="deno.ns" />
 
-// ─── CONFIG (set these as env vars) ───────────────────────────────────────────
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
 const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL")!;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
-const seenJobIds = new Set<string>();
+const seenJobIds = new Set<number>();
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 interface Job {
-  jobId: string;
-  title: string;
-  primaryLocation?: string;
-  organization?: string;
-  employmentType?: string;
-  postingDate?: string;
-  jobSummary?: string;
+  id: number;
+  name: string;
+  locations: string[];
+  standardizedLocations: string[];
+  postedTs: number;
+  department: string;
+  workLocationOption: string;
+  positionUrl: string;
 }
 
 // ─── MICROSOFT CAREERS API ────────────────────────────────────────────────────
 async function fetchJobs(): Promise<Job[]> {
   const params = new URLSearchParams({
-    country: "United States",
-    profession: "Software Engineering",
-    includeRemote: "true",
-    sortBy: "Most Recent",
-    startrow: "0",
-    num: "20",
+    domain: "microsoft.com",
+    query: "",
+    location: "united states",
+    start: "0",
+    sort_by: "timestamp",
+    filter_include_remote: "1",
+    // filter_profession: "software engineering",
+    filter_profession: "",
   });
 
   const res = await fetch(
-    `https://gcsservices.careers.microsoft.com/search/api/v1/search?${params}`,
+    `https://apply.careers.microsoft.com/api/pcsx/search?${params}`,
     {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://jobs.careers.microsoft.com",
-        "Referer": "https://jobs.careers.microsoft.com/",
+        "Referer": "https://apply.careers.microsoft.com/",
       },
     }
   );
 
-  // Log response info to help debug
   const contentType = res.headers.get("content-type");
-  console.log(`API response status: ${res.status}, content-type: ${contentType}`);
+  console.log(`API status: ${res.status}, content-type: ${contentType}`);
 
   if (!res.ok) throw new Error(`Microsoft API error: ${res.status}`);
-  if (!contentType?.includes("application/json")) {
-    const text = await res.text();
-    throw new Error(`Expected JSON but got: ${text.slice(0, 200)}`);
-  }
 
   const data = await res.json();
-  return data?.operationResult?.result?.jobs ?? [];
+  return data?.data?.positions ?? [];
 }
 
 // ─── EMAIL SENDER ─────────────────────────────────────────────────────────────
@@ -87,29 +84,24 @@ function buildEmailHtml(jobs: Job[]): string {
       (job) => `
       <div style="border:1px solid #e0e0e0;border-radius:8px;padding:16px;margin-bottom:16px;">
         <h2 style="margin:0 0 6px;font-size:18px;">
-          <a href="https://jobs.careers.microsoft.com/global/en/job/${job.jobId}"
+          <a href="https://apply.careers.microsoft.com${job.positionUrl}"
              style="text-decoration:none;color:#0078d4;">
-            ${job.title}
+            ${job.name}
           </a>
         </h2>
         <p style="margin:0 0 4px;color:#555;font-size:14px;">
-          📍 ${job.primaryLocation ?? "Remote / Multiple Locations"}
+          📍 ${job.standardizedLocations?.[0] ?? job.locations?.[0] ?? "Unknown Location"}
         </p>
         <p style="margin:0 0 4px;color:#555;font-size:14px;">
-          🏢 ${job.organization ?? "Microsoft"}
-          ${job.employmentType ? `&nbsp;·&nbsp;${job.employmentType}` : ""}
+          🏢 Microsoft &nbsp;·&nbsp; ${job.department}
+        </p>
+        <p style="margin:0 0 4px;color:#555;font-size:14px;">
+          💻 ${job.workLocationOption === "remote" ? "Remote" : job.workLocationOption === "hybrid" ? "Hybrid" : "On-site"}
         </p>
         <p style="margin:0 0 8px;color:#555;font-size:14px;">
-          📅 Posted: ${formatDate(job.postingDate)}
+          📅 Posted: ${formatDate(job.postedTs)}
         </p>
-        ${
-          job.jobSummary
-            ? `<p style="margin:0;color:#333;font-size:14px;line-height:1.5;">
-                 ${job.jobSummary.slice(0, 300)}${job.jobSummary.length > 300 ? "…" : ""}
-               </p>`
-            : ""
-        }
-        <a href="https://jobs.careers.microsoft.com/global/en/job/${job.jobId}"
+        <a href="https://apply.careers.microsoft.com${job.positionUrl}"
            style="display:inline-block;margin-top:12px;padding:8px 16px;background:#0078d4;color:#fff;border-radius:4px;text-decoration:none;font-size:14px;">
           View Job →
         </a>
@@ -137,32 +129,34 @@ function buildEmailHtml(jobs: Job[]): string {
   `;
 }
 
-function formatDate(dateStr?: string): string {
-  if (!dateStr) return "Unknown";
-  return new Date(dateStr).toLocaleDateString("en-US", {
+function formatDate(unixTs: number): string {
+  // postedTs is in seconds
+  return new Date(unixTs * 1000).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
 // ─── POLL LOGIC ───────────────────────────────────────────────────────────────
 async function poll() {
   try {
-    return; // temporarily disabled
     console.log(`[${new Date().toISOString()}] Polling Microsoft Careers...`);
     const jobs = await fetchJobs();
+    console.log(`Fetched ${jobs.length} jobs`);
 
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60; // unix seconds
 
     const newJobs = jobs.filter((j) => {
-      const isRecent = j.postingDate && new Date(j.postingDate) >= fiveMinutesAgo;
-      const isNew = !seenJobIds.has(j.jobId);
+      const isRecent = j.postedTs >= fiveMinutesAgo;
+      const isNew = !seenJobIds.has(j.id);
       return isRecent && isNew;
     });
 
-    // Always update seen list with everything fetched this round
-    jobs.forEach((j) => seenJobIds.add(j.jobId));
+    // Always update seen list
+    jobs.forEach((j) => seenJobIds.add(j.id));
 
     if (newJobs.length === 0) {
       console.log("No new jobs in the last 5 minutes.");
@@ -179,7 +173,7 @@ async function poll() {
 // ─── CRON (every minute) ──────────────────────────────────────────────────────
 Deno.cron("poll-microsoft-jobs", "* * * * *", poll);
 
-// ─── HTTP SERVER (keeps Deno Deploy alive + status check) ────────────────────
+// ─── HTTP SERVER ──────────────────────────────────────────────────────────────
 Deno.serve(() =>
   new Response(
     JSON.stringify({
