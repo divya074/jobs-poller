@@ -24,13 +24,11 @@ async function fetchJobs(): Promise<Job[]> {
   const params = new URLSearchParams({
     domain: "microsoft.com",
     query: "",
-    // location: "united states",
-    location: "",
+    location: "united states",
     start: "0",
     sort_by: "timestamp",
     filter_include_remote: "1",
-    // filter_profession: "software engineering",
-    filter_profession: "",
+    filter_profession: "software engineering",
   });
 
   const res = await fetch(
@@ -148,8 +146,7 @@ async function poll() {
     const jobs = await fetchJobs();
     console.log(`Fetched ${jobs.length} jobs`);
 
-    // const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60; // unix seconds
-    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 10 * 60 * 60; // 10 hours for testing
+    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60; // unix seconds
 
     const newJobs = jobs.filter((j) => {
       const isRecent = j.postedTs >= fiveMinutesAgo;
