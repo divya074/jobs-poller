@@ -2,6 +2,7 @@
   "tasks": {
     "start": "deno run --allow-net --allow-env --allow-read --allow-write --unstable-cron --unstable-kv main.ts"
   },
+  "unstable": ["kv", "cron"],
   "imports": {
     "denomailer": "https://deno.land/x/denomailer@1.6.0/mod.ts"
   }
