@@ -42,8 +42,8 @@ async function fetchJobs(query: string): Promise<Job[]> {
     start: "0",
     sort_by: "timestamp",
     filter_include_remote: "1",
-    filter_profession: "software engineering",
     filter_career_discipline: "Software Engineering",
+    filter_profession: "software engineering",
   });
 
   const res = await fetch(
@@ -178,10 +178,11 @@ async function poll() {
     const filteredJobs = allJobs.filter((j) => !j.name.includes("CTJ - Poly"));
     console.log(`Jobs after excluding CTJ - Poly: ${filteredJobs.length}`);
 
-    // Filter to last 5 minutes
-    const cutoff = Math.floor(Date.now() / 1000) - 5 * 60;
+    // Filter to last 15 minutes (safety buffer — KV deduplication prevents duplicate emails)
+    const cutoff = Math.floor(Date.now() / 1000) - 15 * 60;
+
     const recentJobs = filteredJobs.filter((j) => j.postedTs >= cutoff);
-    console.log(`Recent jobs (within 5 minutes): ${recentJobs.length}`);
+    console.log(`Recent jobs (within 15 minutes): ${recentJobs.length}`);
 
     // Check KV for each job to find truly new ones
     const newJobs: Job[] = [];
@@ -190,8 +191,8 @@ async function poll() {
       if (!seen) newJobs.push(job);
     }
 
-    // Mark all fetched jobs as seen in KV
-    for (const job of allJobs) {
+    // Mark only recent jobs as seen in KV
+    for (const job of recentJobs) {
       await markJobSeen(job.id);
     }
 
