@@ -4,8 +4,11 @@
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
 const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL")!;
 
+// ─── DENO KV (persistent storage) ─────────────────────────────────────────────
+const kv = await Deno.openKv();
+
 // ─── STATE ────────────────────────────────────────────────────────────────────
-const seenJobIds = new Set<number>();
+let totalSeenJobs = 0;
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 interface Job {
@@ -19,16 +22,28 @@ interface Job {
   positionUrl: string;
 }
 
+// ─── KV HELPERS ───────────────────────────────────────────────────────────────
+async function isJobSeen(jobId: number): Promise<boolean> {
+  const entry = await kv.get(["seen_jobs", jobId]);
+  return entry.value !== null;
+}
+
+async function markJobSeen(jobId: number): Promise<void> {
+  await kv.set(["seen_jobs", jobId], true);
+  totalSeenJobs++;
+}
+
 // ─── MICROSOFT CAREERS API ────────────────────────────────────────────────────
-async function fetchJobs(): Promise<Job[]> {
+async function fetchJobs(query: string): Promise<Job[]> {
   const params = new URLSearchParams({
     domain: "microsoft.com",
-    query: "",
+    query,
     location: "united states",
     start: "0",
     sort_by: "timestamp",
     filter_include_remote: "1",
     filter_profession: "software engineering",
+    filter_career_discipline: "Software Engineering",
   });
 
   const res = await fetch(
@@ -44,9 +59,9 @@ async function fetchJobs(): Promise<Job[]> {
   );
 
   const contentType = res.headers.get("content-type");
-  console.log(`API status: ${res.status}, content-type: ${contentType}`);
+  console.log(`[${query}] API status: ${res.status}, content-type: ${contentType}`);
 
-  if (!res.ok) throw new Error(`Microsoft API error: ${res.status}`);
+  if (!res.ok) throw new Error(`Microsoft API error (${query}): ${res.status}`);
 
   const data = await res.json();
   return data?.data?.positions ?? [];
@@ -129,7 +144,6 @@ function buildEmailHtml(jobs: Job[]): string {
 }
 
 function formatDate(unixTs: number): string {
-  // postedTs is in seconds
   return new Date(unixTs * 1000).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -143,26 +157,52 @@ function formatDate(unixTs: number): string {
 async function poll() {
   try {
     console.log(`[${new Date().toISOString()}] Polling Microsoft Careers...`);
-    const jobs = await fetchJobs();
-    console.log(`Fetched ${jobs.length} jobs`);
 
-    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60; // unix seconds
+    // Fetch IC2 and IC3 jobs in parallel
+    const [ic2Jobs, ic3Jobs] = await Promise.all([
+      fetchJobs("IC2"),
+      fetchJobs("IC3"),
+    ]);
 
-    const newJobs = jobs.filter((j) => {
-      const isRecent = j.postedTs >= fiveMinutesAgo;
-      const isNew = !seenJobIds.has(j.id);
-      return isRecent && isNew;
-    });
+    console.log(`Fetched IC2: ${ic2Jobs.length} jobs, IC3: ${ic3Jobs.length} jobs`);
 
-    // Always update seen list
-    jobs.forEach((j) => seenJobIds.add(j.id));
+    // Merge and deduplicate by job ID
+    const allJobsMap = new Map<number, Job>();
+    for (const job of [...ic2Jobs, ...ic3Jobs]) {
+      allJobsMap.set(job.id, job);
+    }
+    const allJobs = Array.from(allJobsMap.values());
+    console.log(`Total unique jobs: ${allJobs.length}`);
+
+    // Exclude CTJ - Poly jobs
+    const filteredJobs = allJobs.filter((j) => !j.name.includes("CTJ - Poly"));
+    console.log(`Jobs after excluding CTJ - Poly: ${filteredJobs.length}`);
+
+    // Filter to last 5 minutes
+    const cutoff = Math.floor(Date.now() / 1000) - 5 * 60;
+    const recentJobs = filteredJobs.filter((j) => j.postedTs >= cutoff);
+    console.log(`Recent jobs (within 5 minutes): ${recentJobs.length}`);
+
+    // Check KV for each job to find truly new ones
+    const newJobs: Job[] = [];
+    for (const job of recentJobs) {
+      const seen = await isJobSeen(job.id);
+      if (!seen) newJobs.push(job);
+    }
+
+    // Mark all fetched jobs as seen in KV
+    for (const job of allJobs) {
+      await markJobSeen(job.id);
+    }
+
+    console.log(`New unseen jobs: ${newJobs.length}`);
 
     if (newJobs.length === 0) {
-      console.log("No new jobs in the last 5 minutes.");
+      console.log("No new jobs found.");
       return;
     }
 
-    console.log(`Found ${newJobs.length} new job(s) — sending email...`);
+    console.log(`Sending email for ${newJobs.length} new job(s)...`);
     await sendEmail(newJobs);
   } catch (err) {
     console.error("Poll error:", err);
@@ -177,7 +217,7 @@ Deno.serve(() =>
   new Response(
     JSON.stringify({
       status: "running",
-      seenJobs: seenJobIds.size,
+      seenJobs: totalSeenJobs,
       lastCheck: new Date().toISOString(),
     }),
     { headers: { "Content-Type": "application/json" } }
